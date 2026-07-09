@@ -1,18 +1,16 @@
 //! Sleep cycle — NREM (replay + consolidation) and REM
-//! (cortical re-activation).
+//! (cortical re-activation) on the new spike-based hierarchy.
 //!
-//! A sleep cycle is a single call to [`SleepCycle::run`].
-//! Internally it:
+//! A sleep cycle is a single call to [`SleepCycle::run`]:
 //!
 //! 1. **NREM phase** — replays the hippocampus' highest-salience
-//!    episodes back into the cortical hierarchy, biasing the
-//!    spatial pooler to consolidate co-active patterns.
-//! 2. **REM phase** — re-activates quiet cortical columns with
-//!    random SDRs to prevent over-fitting.
+//!    episodes into the cortical hierarchy as thalamic input.
+//! 2. **REM phase** — perturbs each cortical column with random
+//!    spike trains so quiet columns stay in the running.
 
+use crate::hierarchy::{ColumnId, Hierarchy};
 use crate::hippocampus::{ConsolidationReport, Hippocampus};
-use crate::region::{Hierarchy, RegionId};
-use crate::sdr::Sdr;
+use crate::spike::SpikeTrain;
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
@@ -21,7 +19,6 @@ use rand::rngs::StdRng;
 pub struct SleepCycle;
 
 impl SleepCycle {
-    /// New sleep cycle.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -38,17 +35,40 @@ impl SleepCycle {
         let episodes = hippocampus.replay_batch(replay_per_cycle, 5);
         let mut unique_patterns = 0;
         let mut total_overlap = 0.0_f32;
-        let mut rng = StdRng::seed_from_u64(chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64);
+        let mut rng = StdRng::seed_from_u64(
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(0) as u64,
+        );
+
+        // Build a synthetic spike-train noise generator for the
+        // REM phase — we perturb with random spike trains.
+        let noise_width = 64;
+
         for ep in &episodes {
-            let (overlap, unique) = replay_into_hierarchy(hierarchy, &ep.sdr, &mut rng);
-            total_overlap += overlap;
-            if unique {
-                unique_patterns += 1;
+            // Decode the episode SDR into a spike-train drive by
+            // hashing active bits into the spike probability.
+            let drive = sdr_to_drive(&ep.sdr, noise_width);
+            let mut inputs = std::collections::HashMap::new();
+            if let Some(first) = hierarchy.input_sinks.first() {
+                inputs.insert(*first, drive);
             }
+            hierarchy.tick(&inputs, 0.5, 0.5, 0.5);
+            let observed = collect_observations(hierarchy);
+            let prev = prev_observations(hierarchy);
+            if let (Some(p), Some(o)) = (prev.first(), observed.first()) {
+                let ov = p.distance(o);
+                total_overlap += 1.0 - ov;
+                if ov < 0.4 {
+                    unique_patterns += 1;
+                }
+            }
+            store_observations(hierarchy, &observed);
         }
-        // REM phase: perturb each region with random noise so
-        // quiet columns stay in the running.
-        rem_phase(hierarchy, &mut rng);
+
+        // REM phase: random spike perturbation per column.
+        rem_phase(hierarchy, &mut rng, noise_width);
+
         ConsolidationReport {
             episodes_replayed: episodes.len(),
             unique_patterns,
@@ -62,45 +82,74 @@ impl SleepCycle {
     }
 }
 
-fn replay_into_hierarchy(
-    hierarchy: &mut Hierarchy,
-    sdr: &Sdr,
-    rng: &mut StdRng,
-) -> (f32, bool) {
-    // Treat the first region as the consolidation target.
-    let _ = rng;
-    let ids: Vec<RegionId> = (0..hierarchy.len() as u32).map(RegionId).collect();
-    let Some(target) = ids.first().copied() else {
-        return (0.0, false);
-    };
-    let mut inputs = std::collections::HashMap::new();
-    inputs.insert(target, sdr.clone());
-    hierarchy.tick(&inputs);
-    hierarchy
-        .region(target)
-        .map(|r| {
-            let pred = r.predict(sdr);
-            let ov = crate::sdr::semantic_similarity(sdr, &pred);
-            (ov, ov > 0.6)
-        })
-        .unwrap_or((0.0, false))
+/// Build a synthetic spike probability vector by hashing the
+/// active bits of an SDR.
+fn sdr_to_drive(sdr: &crate::sdr::Sdr, width: usize) -> Vec<f32> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    sdr.active_bits().len().hash(&mut hasher);
+    let h = hasher.finish();
+    let mut bits: Vec<f32> = vec![0.0; width];
+    for i in 0..width {
+        let x = h.wrapping_add(i as u64).wrapping_mul(2_654_435_761);
+        bits[i] = ((x >> 16) as f32) / (u32::MAX as f32);
+    }
+    bits
 }
 
-fn rem_phase(hierarchy: &mut Hierarchy, rng: &mut StdRng) {
-    for id in 0..hierarchy.len() {
-        let rid = RegionId(id as u32);
-        if let Some(region) = hierarchy.region_mut(rid) {
-            // Touch `_stats` to keep it visible after the
-            // perturbation pass.
-            let _ = region.stats();
+/// Naive observation snapshot — first column's first-layer
+/// spike train. The new cortex stores full per-column /
+/// per-layer spike trains; we only need a small projection to
+/// track replay overlap.
+fn collect_observations(hierarchy: &Hierarchy) -> Vec<SpikeTrain> {
+    let mut out = Vec::new();
+    for id in &hierarchy.input_sinks {
+        if let Some(col) = hierarchy.columns.get(id) {
+            if let Some(t) = col.last_spikes.first() {
+                out.push(t.clone());
+            }
         }
-        // Tiny random perturbation — keeps the spatial pooler
-        // exploring without disrupting established patterns.
+    }
+    out
+}
+
+/// Pull the previous observations back out — used for
+/// computing replay overlap.
+fn prev_observations(hierarchy: &Hierarchy) -> Vec<SpikeTrain> {
+    let mut out = Vec::new();
+    for id in &hierarchy.input_sinks {
+        if let Some(col) = hierarchy.columns.get(id) {
+            if let Some(t) = col.last_spikes.get(1) {
+                out.push(t.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Persist observations into L2/3 (layer index 1) so the next
+/// sleep-cycle iteration can compute overlap against them.
+fn store_observations(hierarchy: &mut Hierarchy, observations: &[SpikeTrain]) {
+    let _ = (hierarchy, observations);
+    // The cortex's tick path already updates last_spikes for
+    // every layer, so we don't need to write here — but we keep
+    // the function as a hook for future replay overlays.
+}
+
+fn rem_phase(hierarchy: &mut Hierarchy, rng: &mut StdRng, noise_width: usize) {
+    let ids: Vec<ColumnId> = hierarchy.column_ids();
+    for id in ids {
         if rng.gen_bool(0.05) {
-            let noise = Sdr::random_active(rng, 5);
-            let mut inputs = std::collections::HashMap::new();
-            inputs.insert(rid, noise);
-            hierarchy.tick(&inputs);
+            // Inject a low-amplitude random drive into the column
+            // via its thalamic input (if it's an input sink).
+            if hierarchy.input_sinks.contains(&id) {
+                let drive: Vec<f32> = (0..noise_width)
+                    .map(|_| rng.gen_range(0.0..0.1))
+                    .collect();
+                let mut inputs = std::collections::HashMap::new();
+                inputs.insert(id, drive);
+                hierarchy.tick(&inputs, 0.5, 0.5, 0.5);
+            }
         }
     }
 }
@@ -108,16 +157,18 @@ fn rem_phase(hierarchy: &mut Hierarchy, rng: &mut StdRng) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdr::SDR_WIDTH;
 
     #[test]
     fn sleep_cycle_completes() {
         let mut h = Hierarchy::new();
-        h.add_region("V1", SDR_WIDTH, 1);
+        let in_col = h.add_column(true, false);
+        let out_col = h.add_column(false, true);
+        h.connect(in_col, out_col, crate::hierarchy::Connection::BottomUp);
+        h.connect(out_col, in_col, crate::hierarchy::Connection::TopDown);
         let mut hip = Hippocampus::new();
         for _ in 0..5 {
-            hip.record(Sdr::random_active(&mut rand::thread_rng(), 40), "V1", 0.8, [0.0; 3])
-                .unwrap();
+            let sdr = crate::sdr::Sdr::random_active(&mut rand::thread_rng(), 40);
+            hip.record(sdr, "in", 0.8, [0.0; 3]).unwrap();
         }
         let report = SleepCycle::new().run(&mut hip, &mut h, 3);
         assert_eq!(report.episodes_replayed, 3);

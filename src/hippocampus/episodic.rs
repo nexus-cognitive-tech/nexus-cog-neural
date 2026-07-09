@@ -30,9 +30,9 @@ pub struct Episode {
 /// during sleep.
 #[derive(Default)]
 pub struct Hippocampus {
-    episodes: HashMap<u64, Episode>,
-    by_source: HashMap<String, Vec<u64>>,
-    next_id: u64,
+    pub(crate) episodes: HashMap<u64, Episode>,
+    pub(crate) by_source: HashMap<String, Vec<u64>>,
+    pub(crate) next_id: u64,
     /// Salience floor — episodes below this are dropped on write.
     pub salience_floor: f32,
     /// Capacity ceiling — once exceeded, the lowest-salience
@@ -98,6 +98,18 @@ impl Hippocampus {
     /// Look up an episode by id.
     pub fn get(&self, id: u64) -> Option<&Episode> {
         self.episodes.get(&id)
+    }
+
+    /// Iterate every stored episode, in arbitrary order.
+    pub fn episodes(&self) -> impl Iterator<Item = &Episode> {
+        self.episodes.values()
+    }
+
+    /// Sort every stored episode by timestamp descending.
+    pub fn episodes_sorted_by_recency(&self) -> Vec<Episode> {
+        let mut v: Vec<Episode> = self.episodes.values().cloned().collect();
+        v.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+        v
     }
 
     /// Iterate episodes for a given source (e.g. "thalamus.vision").
