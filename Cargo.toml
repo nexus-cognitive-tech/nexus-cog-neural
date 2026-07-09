@@ -1,0 +1,29 @@
+[package]
+name = "nexus-cog-neural"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Brain-like neural architecture — HTM-inspired SDRs, cortical regions, thalamus, hippocampus, basal ganglia, amygdala, working memory, attention, neuromodulators, global workspace, sleep-driven consolidation"
+license = "Apache-2.0"
+repository = "https://github.com/nexus-cognitive-tech/nexus-cog-neural"
+homepage = "https://github.com/nexus-cognitive-tech"
+authors = ["Nexus Cognitive Technologies"]
+keywords = ["htm", "sdr", "neural", "cortex", "cognition"]
+categories = ["data-structures", "science", "algorithms"]
+readme = "README.md"
+
+[dependencies]
+nexus-cog-core = { path = "../nexus-cog-core", version = "0.1.0" }
+nexus-cog-storage = { path = "../nexus-cog-storage", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+thiserror = "1"
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+parking_lot = "0.12"
+bitvec = "1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
