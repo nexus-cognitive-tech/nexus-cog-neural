@@ -107,6 +107,7 @@ impl Encoder<f32> for ScalarEncoder {
 /// "nearby" categories share a few bits.
 pub struct CategoryEncoder {
     bits_per_category: usize,
+    #[allow(dead_code)] // planned: bonus overlap for nearby categories
     overlap: usize,
     cache: std::collections::HashMap<u32, Sdr>,
 }

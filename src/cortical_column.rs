@@ -19,7 +19,7 @@
 //! higher cortical areas.
 
 use crate::spike::{SpikeTrain, SpikingPopulation, SPIKE_WINDOW};
-use crate::synapse::{SynapticFanOut, ThreeFactorHebbianRule, NeuromodulatorLocal};
+use crate::synapse::{SynapticFanOut, NeuromodulatorLocal};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,7 @@ pub struct LayerSpec {
 }
 
 impl LayerSpec {
+    /// Return the default 6-layer column spec.
     pub fn default_column() -> [LayerSpec; 5] {
         [
             LayerSpec { width: 16, is_input: false, is_output: false }, // L1
@@ -76,7 +77,9 @@ impl LayerSpec {
 /// One column's six-layer microcircuit.
 #[derive(Debug, Clone)]
 pub struct CorticalColumn {
+    /// Per-layer spiking populations.
     pub layers: Vec<SpikingPopulation>,
+    /// Layer specifications used to construct this column.
     pub layer_specs: Vec<LayerSpec>,
     /// L4 → L2/3 feed-forward projection.
     pub ff_l4_to_l23: SynapticFanOut,
@@ -101,7 +104,7 @@ pub struct CorticalColumn {
 impl CorticalColumn {
     /// Construct a new column from per-layer specs.
     pub fn new(layer_specs: [LayerSpec; 5], seed: u64) -> Self {
-        let mut rng = StdRng::seed_from_u64(seed);
+        let rng = StdRng::seed_from_u64(seed);
         let layers: Vec<SpikingPopulation> = layer_specs
             .iter()
             .enumerate()
@@ -215,7 +218,7 @@ impl CorticalColumn {
             }
         }
         // Add this to existing L4 drive.
-        for (i, v) in l4_pre.iter().enumerate() {
+        for (i, _v) in l4_pre.iter().enumerate() {
             if let Some(existing) = self.layers[2].phases.get_mut(i) {
                 // feedback modulates intrinsic drive.
                 let _ = existing;

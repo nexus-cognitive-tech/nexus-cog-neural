@@ -75,7 +75,10 @@ pub use cortex::{Cortex, CortexConfig, CortexStats, ThoughtBroadcast};
 pub use cortical_column::{CorticalColumn, CorticalLayer, LayerSpec};
 pub use global_workspace::{Coalition, GlobalWorkspace};
 pub use hierarchy::{ColumnId, Connection, Hierarchy};
-pub use hippocampus::{ConsolidationReport, Episode, Hippocampus};
+pub use hippocampus::{
+    episode_metadata, ConsolidationReport, Episode, EpisodeMetadata, EpisodeSink,
+    EpisodeValidationError, Hippocampus, NullEpisodeSink,
+};
 pub use neurogenesis::{Neurogenesis, NeurogenesisConfig, NeurogenicVerdict};
 pub use neuromodulators::Neuromodulators;
 pub use replay::{ActivationMap, ModulatorSnapshot, ReplayBuffer, ReplayFrame};

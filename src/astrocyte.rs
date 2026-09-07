@@ -166,7 +166,7 @@ impl AstrocyteNetwork {
             .collect();
 
         // Apply received wave as an additional bump.
-        for (cell, incoming) in self.cells.iter_mut().zip(waves.into_iter()) {
+        for (cell, incoming) in self.cells.iter_mut().zip(waves) {
             cell.receive_wave(incoming);
         }
 

@@ -22,9 +22,10 @@ use crate::spike::SpikeTrain;
 use serde::{Deserialize, Serialize};
 
 /// One step of the perception → action → perception cycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoopPhase {
     /// Reading sensory input.
+    #[default]
     Sensing,
     /// Cortex is generating predictions.
     Predicting,
@@ -34,12 +35,9 @@ pub enum LoopPhase {
     Acting,
     /// Action is being executed; effect will be sensed next tick.
     Effecting,
-}
-
-impl Default for LoopPhase {
-    fn default() -> Self {
-        LoopPhase::Sensing
-    }
+    /// NREM/REM sleep — offline consolidation, no sensory input.
+    /// Loops back to `Sensing` when the sleep cycle ends.
+    Sleeping,
 }
 
 /// Result of one comparator step — the prediction error signal
@@ -68,6 +66,7 @@ pub struct SensorimotorLoop {
 }
 
 impl SensorimotorLoop {
+    /// Create a new sensorimotor loop in the `Sensing` phase.
     pub fn new() -> Self {
         Self {
             history: Vec::with_capacity(1024),
@@ -116,6 +115,7 @@ impl SensorimotorLoop {
             LoopPhase::Comparing => LoopPhase::Acting,
             LoopPhase::Acting => LoopPhase::Effecting,
             LoopPhase::Effecting => LoopPhase::Sensing,
+            LoopPhase::Sleeping => LoopPhase::Sensing,
         }
     }
 

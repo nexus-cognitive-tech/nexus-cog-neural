@@ -29,18 +29,18 @@
 use crate::amygdala::{Amygdala, Valence};
 use crate::astrocyte::AstrocyteNetwork;
 use crate::attention::Attention;
-use crate::basal_ganglia::{ActionSelection, BasalGanglia};
-use crate::cortical_column::{CorticalColumn, CorticalLayer};
+use crate::basal_ganglia::BasalGanglia;
+use crate::cortical_column::CorticalLayer;
 use crate::global_workspace::{Coalition, GlobalWorkspace};
 use crate::hierarchy::{ColumnId, Connection, Hierarchy};
-use crate::hippocampus::{ConsolidationReport, Hippocampus};
+use crate::hippocampus::{ConsolidationReport, EpisodeMetadata, Hippocampus};
 use crate::neurogenesis::{Neurogenesis, NeurogenesisConfig};
 use crate::neuromodulators::Neuromodulators;
 use crate::replay::{ActivationMap, ModulatorSnapshot, ReplayBuffer, ReplayFrame};
 use crate::sensorimotor::{LoopPhase, SensorimotorLoop};
 use crate::sleep::SleepCycle;
 use crate::spike::SpikeTrain;
-use crate::thalamus::{Thalamus, ThalamusChannel};
+use crate::thalamus::Thalamus;
 use crate::working_memory::WorkingMemory;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -79,47 +79,89 @@ impl Default for CortexConfig {
     }
 }
 
-/// Snapshot of the cortex's high-level state — for the Studio UI.
+/// Snapshot of the cortex's high-level state — for the Studio UI
+/// and the `cortex_explain` MCP tool. Survives process restarts via
+/// [`crate::cortex::Persistence`] when the cortex is wired up
+/// against a SQLite backend.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CortexStats {
+    /// Monotonic tick counter.
     pub ticks: u64,
+    /// Number of cortical columns currently mounted.
     pub n_columns: usize,
+    /// Number of hippocampal episodes currently stored.
     pub n_episodes: usize,
+    /// Number of thalamic forwards that were blocked by gating.
     pub n_thalamic_blocks: u64,
+    /// Number of thalamic forwards that reached the hierarchy.
     pub n_thalamic_forwards: u64,
+    /// Mean overlap between successive global-workspace broadcasts.
     pub mean_broadcast_overlap: f32,
+    /// Label of the last basal-ganglia selection (e.g.
+    /// `"respond.col-2"`). `None` until the first tick.
     pub last_action: Option<String>,
+    /// Mean prediction error from the sensorimotor loop.
     pub mean_prediction_error: f32,
+    /// Phase of the global workspace loop.
     pub loop_phase: LoopPhase,
+    /// Last text response the model emitted during `cortex_tick`.
+    /// Populated by the persistence layer when callers pass a
+    /// `response` argument; surfaced through `cortex_explain` so
+    /// downstream reasoning can stay grounded in what was
+    /// actually emitted rather than the cortical activations
+    /// alone.
+    #[serde(default)]
+    pub last_response: Option<String>,
 }
 
 /// Result of one [`Cortex::tick`] call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThoughtBroadcast {
+    /// Monotonically increasing tick counter.
     pub tick: u64,
+    /// Winning coalition for this tick.
     pub coalition: Coalition,
+    /// Action selected by the basal ganglia, if any.
     pub chosen_action: Option<String>,
+    /// Cumulative valence from prediction-error comparison.
     pub valence: Valence,
+    /// Current phase of the sensorimotor loop.
     pub loop_phase: LoopPhase,
+    /// Per-region activation levels.
     pub activations: Vec<f32>,
 }
 
 /// The cortex.
 pub struct Cortex {
+    /// Top-level configuration.
     pub config: CortexConfig,
+    /// Thalamic relay and gating.
     pub thalamus: Thalamus,
+    /// Column hierarchy with recurrence.
     pub hierarchy: Hierarchy,
+    /// Hippocampal episodic memory.
     pub hippocampus: Hippocampus,
+    /// Astrocyte metabolic network.
     pub astrocytes: AstrocyteNetwork,
+    /// Neurogenesis controller.
     pub neurogenesis: Neurogenesis,
+    /// Amygdala (emotional valence).
     pub amygdala: Amygdala,
+    /// Neuromodulator panel.
     pub modulators: Neuromodulators,
+    /// Working memory buffer.
     pub working_memory: WorkingMemory,
+    /// Basal ganglia action selection.
     pub basal_ganglia: BasalGanglia,
+    /// Global workspace broadcast.
     pub global_workspace: GlobalWorkspace,
+    /// Sensorimotor loop state.
     pub sensorimotor: SensorimotorLoop,
+    /// Replay buffer for sleep consolidation.
     pub replay: ReplayBuffer,
+    /// Attention spotlight.
     pub attention: Attention,
+    /// Aggregate statistics.
     pub stats: CortexStats,
     channels: Vec<u32>,
     last_observations: Vec<SpikeTrain>,
@@ -188,10 +230,14 @@ impl Cortex {
     }
 
     /// Run one tick. `inputs` maps channel label → SDR — each
-    /// entry becomes the bottom-up thalamic drive.
+    /// entry becomes the bottom-up thalamic drive. `metadata`, if
+    /// supplied, is attached to the hippocampal episode produced
+    /// by this tick (use it for the task description / model
+    /// response / thalamic channel mix).
     pub fn tick(
         &mut self,
         inputs: HashMap<String, crate::sdr::Sdr>,
+        metadata: Option<EpisodeMetadata>,
     ) -> ThoughtBroadcast {
         let tick = self.replay.next_tick();
         let arousal = self.modulators.norepinephrine.level;
@@ -327,14 +373,17 @@ impl Cortex {
         }
         self.working_memory.tick();
 
-        // 11. Hippocampus.
+        // 11. Hippocampus — record with caller-supplied metadata
+        // when available, otherwise fall back to a Null payload.
         let salience = 0.6 * valence.magnitude() + 0.4 * norepinephrine;
         if salience > self.hippocampus.salience_floor {
-            self.hippocampus.record(
+            let payload = metadata.unwrap_or(EpisodeMetadata::Null);
+            self.hippocampus.record_with_metadata(
                 spike_to_sdr(&observations),
                 "sensorimotor.observations",
                 salience,
                 valence.to_array(),
+                payload,
             );
         }
 
@@ -415,8 +464,51 @@ impl Cortex {
     }
 
     /// Run one sleep cycle.
+    ///
+    /// Sleep is a **state-mutating** operation. Beyond replaying
+    /// episodes into the cortex for consolidation, the cortex:
+    ///
+    /// * increments `stats.ticks` by `replay_per_cycle` so the
+    ///   `cortex_explain` MCP tool reflects the NREM/REM virtual
+    ///   ticks (the previous implementation left `stats.ticks`
+    ///   untouched after sleep, which made the explain output
+    ///   permanently out-of-sync);
+    /// * applies the consolidation reward to the neuromodulators
+    ///   — serotonin rises (slow-wave activity), norepinephrine
+    ///   falls (deep sleep), dopamine reconciles towards its
+    ///   baseline (offline reward-prediction reset). The
+    ///   `ConsolidationReport` returns the deltas for audit.
     pub fn sleep(&mut self, replay_per_cycle: usize) -> ConsolidationReport {
-        SleepCycle::new().run(&mut self.hippocampus, &mut self.hierarchy, replay_per_cycle)
+        let report = SleepCycle::new().run(
+            &mut self.hippocampus,
+            &mut self.hierarchy,
+            replay_per_cycle,
+        );
+
+        // Apply consolidation reward to modulators.
+        let replayed = replay_per_cycle.min(report.episodes_replayed) as f32;
+        let consolidation_strength = (replayed / 16.0).clamp(0.0, 1.0);
+        // Serotonin rises with successful consolidation.
+        self.modulators
+            .serotonin
+            .update(0.5 + 0.4 * consolidation_strength);
+        // Norepinephrine falls — sleep is low-arousal.
+        self.modulators
+            .norepinephrine
+            .update(0.5 - 0.4 * consolidation_strength);
+        // Dopamine reconciles: a small positive nudge scaled by
+        // the consolidation overlap (good consolidation = reward).
+        self.modulators
+            .dopamine
+            .update(0.5 + 0.3 * report.avg_target_overlap * consolidation_strength,
+                    self.modulators.dopamine.baseline);
+
+        // Virtual NREM/REM ticks — sleep is cortical activity
+        // that the explain tool should reflect.
+        self.stats.ticks = self.stats.ticks.saturating_add(replay_per_cycle as u64);
+        self.stats.loop_phase = crate::sensorimotor::LoopPhase::Sleeping;
+
+        report
     }
 
     /// Snapshot the cortex for persistence.
@@ -425,18 +517,38 @@ impl Cortex {
         Self::new(self.config.clone())
     }
 
-    /// Read-only access.
+    /// Read-only access to the thalamus.
     pub fn thalamus(&self) -> &Thalamus { &self.thalamus }
+    /// Read-only access to the attention spotlight.
     pub fn attention(&self) -> &Attention { &self.attention }
+    /// Read-only access to the hierarchy.
     pub fn hierarchy(&self) -> &Hierarchy { &self.hierarchy }
+    /// Read-only access to the hippocampus.
     pub fn hippocampus(&self) -> &Hippocampus { &self.hippocampus }
+    /// Read-only access to the amygdala.
     pub fn amygdala(&self) -> &Amygdala { &self.amygdala }
+    /// Read-only access to the neuromodulator panel.
     pub fn modulators(&self) -> &Neuromodulators { &self.modulators }
+    /// Read-only access to working memory.
     pub fn working_memory(&self) -> &WorkingMemory { &self.working_memory }
+    /// Read-only access to the basal ganglia.
     pub fn basal_ganglia(&self) -> &BasalGanglia { &self.basal_ganglia }
+    /// Read-only access to the global workspace.
     pub fn global_workspace(&self) -> &GlobalWorkspace { &self.global_workspace }
+    /// Read-only access to the replay buffer.
     pub fn replay(&self) -> &ReplayBuffer { &self.replay }
+    /// Read-only access to aggregate statistics.
     pub fn stats(&self) -> &CortexStats { &self.stats }
+
+    /// Mutable access to the hippocampus — required by the persistence
+    /// layer to restore episodes and tweak neuromodulator levels at
+    /// startup. Production callers should go through
+    /// [`crate::Cortex::tick`] instead.
+    pub fn hippocampus_mut(&mut self) -> &mut Hippocampus { &mut self.hippocampus }
+    /// Mutable access to the neuromodulator panel.
+    pub fn modulators_mut(&mut self) -> &mut Neuromodulators { &mut self.modulators }
+    /// Mutable access to aggregate statistics.
+    pub fn stats_mut(&mut self) -> &mut CortexStats { &mut self.stats }
 }
 
 /// Convert spike-train observations into a stable SDR for
@@ -466,13 +578,14 @@ fn spike_train_to_sdr(train: &SpikeTrain) -> crate::sdr::Sdr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sdr::Sdr;
 
     #[test]
     fn cortex_tick_produces_broadcast() {
         let mut cortex = Cortex::default_for_tests();
         let mut inputs = HashMap::new();
-        inputs.insert("channel.0".to_string(), vec![0.5; 16]);
-        let broadcast = cortex.tick(inputs);
+        inputs.insert("channel.0".to_string(), Sdr::from_bits(vec![1, 2, 3]));
+        let broadcast = cortex.tick(inputs, None);
         assert_eq!(broadcast.tick, 0);
     }
 
@@ -481,8 +594,8 @@ mod tests {
         let mut cortex = Cortex::default_for_tests();
         for _ in 0..5 {
             let mut inputs = HashMap::new();
-            inputs.insert("channel.0".to_string(), vec![0.5; 16]);
-            let _ = cortex.tick(inputs);
+            inputs.insert("channel.0".to_string(), Sdr::from_bits(vec![1, 2, 3]));
+            let _ = cortex.tick(inputs, None);
         }
         assert_eq!(cortex.replay().len(), 5);
     }
@@ -492,8 +605,8 @@ mod tests {
         let mut cortex = Cortex::default_for_tests();
         for _ in 0..5 {
             let mut inputs = HashMap::new();
-            inputs.insert("channel.0".to_string(), vec![0.5; 16]);
-            let _ = cortex.tick(inputs);
+            inputs.insert("channel.0".to_string(), Sdr::from_bits(vec![1, 2, 3]));
+            let _ = cortex.tick(inputs, None);
         }
         let report = cortex.sleep(3);
         assert_eq!(report.episodes_replayed, 3);

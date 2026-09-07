@@ -1,7 +1,10 @@
 //! Hippocampus — fast, capacity-unbounded episodic memory.
 
 mod consolidation;
-mod episodic;
+pub mod episodic;
 
 pub use consolidation::ConsolidationReport;
-pub use episodic::{Episode, Hippocampus};
+pub use episodic::{
+    episode_metadata, Episode, EpisodeMetadata, EpisodeSink, EpisodeValidationError, Hippocampus,
+    NullEpisodeSink,
+};

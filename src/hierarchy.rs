@@ -37,11 +37,17 @@ pub enum Connection {
 
 /// A hierarchy of cortical columns with full recurrence.
 pub struct Hierarchy {
+    /// All columns keyed by id.
     pub columns: HashMap<ColumnId, CorticalColumn>,
+    /// Bottom-up connections (feed-forward).
     pub bottom_up: HashMap<ColumnId, Vec<ColumnId>>,
+    /// Top-down connections (feedback).
     pub top_down: HashMap<ColumnId, Vec<ColumnId>>,
+    /// Lateral connections (within the same level).
     pub lateral: HashMap<ColumnId, Vec<ColumnId>>,
+    /// Column ids that receive external input.
     pub input_sinks: Vec<ColumnId>,
+    /// Column ids that produce external output.
     pub output_sources: Vec<ColumnId>,
     next_id: u32,
     rng: StdRng,
@@ -54,10 +60,12 @@ impl Default for Hierarchy {
 }
 
 impl Hierarchy {
+    /// Create a new empty hierarchy.
     pub fn new() -> Self {
         Self::with_seed(0)
     }
 
+    /// Create a new empty hierarchy with a specific RNG seed.
     pub fn with_seed(seed: u64) -> Self {
         Self {
             columns: HashMap::new(),
@@ -230,6 +238,7 @@ impl Hierarchy {
         self.columns.len()
     }
 
+    /// Return `true` if the hierarchy has no columns.
     pub fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }

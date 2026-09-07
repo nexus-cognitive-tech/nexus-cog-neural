@@ -9,6 +9,6 @@
 
 #![allow(dead_code)]
 
-mod thalamus;
+mod relay;
 
-pub use thalamus::{GatingDecision, Thalamus, ThalamusChannel};
+pub use relay::{GatingDecision, Thalamus, ThalamusChannel};

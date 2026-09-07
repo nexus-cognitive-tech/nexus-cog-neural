@@ -93,7 +93,7 @@ impl Attention {
         let chosen: Vec<usize> = scored.into_iter().take(top_k).map(|(i, _)| i).collect();
         let mut bias_indices: Vec<usize> = Vec::new();
         for (i, &c) in chosen.iter().enumerate() {
-            let start = (i * (crate::sdr::SDR_WIDTH / chosen.len().max(1)));
+            let start = i * (crate::sdr::SDR_WIDTH / chosen.len().max(1));
             bias_indices.extend(start..start + crate::sdr::SDR_WIDTH / chosen.len().max(1));
             bias_indices.push(c);
         }

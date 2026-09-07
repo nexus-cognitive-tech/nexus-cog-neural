@@ -66,6 +66,7 @@ pub enum NeurogenicVerdict {
 /// Neurogenic controller — pure logic, no domain knowledge.
 #[derive(Debug, Clone)]
 pub struct Neurogenesis {
+    /// Neurogenesis configuration.
     pub config: NeurogenesisConfig,
     /// Per-column counter of consecutive low-permanence ticks.
     pub low_activity_streak: Vec<u32>,
@@ -74,6 +75,7 @@ pub struct Neurogenesis {
 }
 
 impl Neurogenesis {
+    /// Create a new neurogenesis controller.
     pub fn new(config: NeurogenesisConfig, seed: u64) -> Self {
         Self {
             config,

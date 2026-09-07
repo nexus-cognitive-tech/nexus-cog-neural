@@ -10,18 +10,12 @@ use serde::{Deserialize, Serialize};
 
 /// A coalition of regions that have contributed to the current
 /// global broadcast.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Coalition {
     /// Source labels (region names).
     pub members: Vec<String>,
     /// Union of the contributing SDRs.
     pub union: Sdr,
-}
-
-impl Default for Coalition {
-    fn default() -> Self {
-        Self { members: Vec::new(), union: Sdr::empty() }
-    }
 }
 
 /// Per-tick global workspace broadcast.

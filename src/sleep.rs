@@ -19,6 +19,7 @@ use rand::rngs::StdRng;
 pub struct SleepCycle;
 
 impl SleepCycle {
+    /// Create a new sleep-cycle controller.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -90,9 +91,9 @@ fn sdr_to_drive(sdr: &crate::sdr::Sdr, width: usize) -> Vec<f32> {
     sdr.active_bits().len().hash(&mut hasher);
     let h = hasher.finish();
     let mut bits: Vec<f32> = vec![0.0; width];
-    for i in 0..width {
+    for (i, bit) in bits.iter_mut().enumerate() {
         let x = h.wrapping_add(i as u64).wrapping_mul(2_654_435_761);
-        bits[i] = ((x >> 16) as f32) / (u32::MAX as f32);
+        *bit = ((x >> 16) as f32) / (u32::MAX as f32);
     }
     bits
 }
